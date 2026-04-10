@@ -31,6 +31,43 @@ SOLIDITY_KEYWORDS = {
 }
 
 
+def normalize_cid(cid: str) -> str:
+    """
+    统一 AST/CFG 的 contract id：
+
+    AST 例子（你现在的情况）:
+      data/raw/BSC/145fe1...b488f_CAKEBACK.sol
+
+    CFG 例子:
+      145fe1...b488f_CAKEBACK
+      6e211fA...D1B_TimedToken   (地址大小写混用)
+
+    归一化输出:
+      <addr_lower>_<contractName>    （不带路径，不带 .sol）
+    """
+    if cid is None:
+        return ""
+    s = str(cid).strip()
+    if not s:
+        return ""
+
+    # basename: 去掉目录
+    s = Path(s).name
+
+    # 去掉 .sol 后缀
+    if s.lower().endswith(".sol"):
+        s = s[:-4]
+
+    # 地址部分统一小写（只处理 '_' 前面那段）
+    if "_" in s:
+        addr, rest = s.split("_", 1)
+        s = addr.lower() + "_" + rest
+    else:
+        s = s.lower()
+
+    return s
+
+
 def extract_vars_from_expr(expr: str):
     """从 CFG 节点的 expression 中抽变量"""
     if not expr or not isinstance(expr, str):
@@ -49,10 +86,10 @@ def extract_vars_from_expr(expr: str):
 # 加载“合约级 CFG”，非常关键
 # --------------------------------------------------------
 def load_cfg_by_id(chain: str):
-    """读取 data/graphs_cfg_contract/<chain>.jsonl，返回 id -> cfg_nodes 映射"""
+    """读取 data/graphs_cfg_contract/<chain>.jsonl，返回 normalized_id -> cfg_nodes 映射"""
     cfg_path = CFG_DIR / f"{chain}.jsonl"
     if not cfg_path.exists():
-        print(f"[WARN] No contract-level CFG for {chain}")
+        print(f"[WARN] No contract-level CFG for {chain}: {cfg_path}")
         return {}
 
     id2nodes = {}
@@ -64,11 +101,15 @@ def load_cfg_by_id(chain: str):
                 continue
             try:
                 item = json.loads(line)
-            except:
+            except Exception:
                 continue
 
-            gid = item.get("id")
-            if gid is None:
+            gid_raw = item.get("id")
+            if gid_raw is None:
+                continue
+
+            gid = normalize_cid(gid_raw)
+            if not gid:
                 continue
 
             # ⬇⬇⬇ 重点：合约级 CFG 节点字段
@@ -136,10 +177,10 @@ def main():
     for chain in CHAINS:
         ast_path = AST_DIR / f"{chain}.jsonl"
         if not ast_path.exists():
-            print(f"[WARN] No AST for {chain}, skip.")
+            print(f"[WARN] No AST for {chain}, skip. ({ast_path})")
             continue
 
-        # 加载合约级 CFG !!!
+        # 加载合约级 CFG（按 normalized id 建索引）
         cfg_index = load_cfg_by_id(chain)
         if not cfg_index:
             print(f"[WARN] No CFG loaded for {chain}, skip.")
@@ -147,7 +188,10 @@ def main():
 
         out_path = OUT_DIR / f"{chain}.jsonl"
 
-        count = 0
+        total_ast = 0
+        matched = 0
+        skipped = 0
+
         with ast_path.open("r", encoding="utf8") as fin, \
              out_path.open("w", encoding="utf8") as fout:
 
@@ -158,27 +202,35 @@ def main():
 
                 try:
                     ast_item = json.loads(line)
-                except:
+                except Exception:
                     continue
 
-                gid = ast_item.get("id")
-                if gid not in cfg_index:
-                    # 没 CFG 的合约直接跳过
+                total_ast += 1
+
+                gid_raw = ast_item.get("id")
+                gid = normalize_cid(gid_raw)
+
+                if not gid or gid not in cfg_index:
+                    skipped += 1
                     continue
 
                 cfg_nodes = cfg_index[gid]
                 dfg_nodes, dfg_edges = build_dfg_from_cfg_nodes(cfg_nodes)
 
                 fout.write(json.dumps({
-                    "id": gid,
+                    "id": gid,          # ✅ 写回归一化后的 id，后续永远一致
                     "chain": chain,
                     "dfg_nodes": dfg_nodes,
                     "dfg_edges": dfg_edges
                 }) + "\n")
 
-                count += 1
+                matched += 1
 
-        print(f"[OK] DFG built for {chain}, total = {count}")
+        print(
+            f"[OK] DFG built for {chain}, total = {matched} | "
+            f"AST_seen={total_ast} matched={matched} skipped={skipped} | "
+            f"out={out_path}"
+        )
 
 
 if __name__ == "__main__":

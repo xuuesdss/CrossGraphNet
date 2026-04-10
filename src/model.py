@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
+from .model_dfg import DFGEncoder
 
 
 class CrossGraphNetLiteConfig:
@@ -121,3 +122,28 @@ class CrossGraphNetLite(nn.Module):
 
         h = self.fuse_struct(h_struct, h_sem)
         return self.classifier(h)
+
+##Full模型
+
+
+
+
+class CrossGraphNetFull(nn.Module):
+    def __init__(self, ast_model, dfg_in_dim, hidden_dim=64, num_classes=2):
+        super().__init__()
+        self.ast_model = ast_model
+        self.dfg_encoder = DFGEncoder(dfg_in_dim, hidden_dim)
+
+        self.classifier = nn.Linear(hidden_dim * 2, num_classes)
+
+    def forward(self, ast_data, dfg_data):
+        # AST encoder 输出 64 维
+        h_ast = self.ast_model.encode(ast_data)
+
+        # DFG encoder 输出 64 维
+        x, edge_index, batch = dfg_data.x, dfg_data.edge_index, dfg_data.batch
+        h_dfg = self.dfg_encoder(x, edge_index, batch)
+
+        h = torch.cat([h_ast, h_dfg], dim=1)
+        out = self.classifier(h)
+        return out
